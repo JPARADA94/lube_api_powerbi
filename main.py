@@ -1,94 +1,96 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 import requests
 import json
-import os
 
 app = FastAPI()
 
-# ---------- CONFIG -----------------
-TENANT_ID = os.getenv("TENANT_ID")
-CLIENT_ID = os.getenv("CLIENT_ID")
-CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-
+# -----------------------------------------
+# CONFIGURACIÓN DE POWER BI (NO CAMBIAR)
+# -----------------------------------------
 GROUP_ID = "bd2f044c-eb69-4ebc-b1ed-ebdf71c33b77"
 DATASET_ID = "1e30ac8a-b779-40ed-a18c-883383e44014"
+TABLE_NAME = "DATOS"   # Nombre EXACTO de la tabla en tu dataset
 
-TABLE_NAME = "DATOS"
-COLUMN_NAME = "COMPONENTE"
-# -----------------------------------
+# Token generado desde Power BI (Embed Token o Service Principal)
+# >>> IMPORTANTE: Reemplazar por tu token válido <<<
+TOKEN = "TU_TOKEN_AQUI"
 
-def obtener_token():
-    url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
 
-    data = {
-        "grant_type": "client_credentials",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "scope": "https://analysis.windows.net/powerbi/api/.default"
-    }
-
-    resp = requests.post(url, data=data)
-    resp.raise_for_status()
-    return resp.json()["access_token"]
-
+# -----------------------------------------
+# ENDPOINT DE PRUEBA
+# -----------------------------------------
 @app.get("/")
 def home():
-    return {"mensaje": "API funcionando correctamente"}
+    return {
+        "mensaje": "API funcionando correctamente en Render",
+        "endpoints": [
+            "/contar?componente=XXXX"
+        ]
+    }
 
+
+# -----------------------------------------
+# ENDPOINT PARA CONTAR REGISTROS
+# -----------------------------------------
 @app.get("/contar")
 def contar(componente: str):
 
-    try:
-        token = obtener_token()
+    if not componente:
+        raise HTTPException(status_code=400, detail="Falta el parámetro 'componente'")
 
-        # Consulta DAX → Cuenta cuántas veces se repite el valor
-        dax = f"""
-EVALUATE
-VAR ComponenteBuscado = TRIM(UPPER("@COMPONENTE"))
-RETURN
-ROW(
-    "TotalRegistros",
-    COUNTROWS(
-        FILTER(
-            DATOS,
-            TRIM(UPPER(DATOS[COMPONENTE])) = ComponenteBuscado
+    # 🔥 Convertimos a MAYÚSCULAS y eliminamos espacios
+    componente = componente.strip().upper()
+
+    # -----------------------------------------
+    # DAX ROBUSTO (YO ME ENCARGO DE TODO ESTO)
+    # -----------------------------------------
+    dax_query = f"""
+    EVALUATE
+    VAR ComponenteBuscado = TRIM(UPPER("{componente}"))
+    RETURN
+    ROW(
+        "TotalRegistros",
+        COUNTROWS(
+            FILTER(
+                {TABLE_NAME},
+                TRIM(UPPER({TABLE_NAME}[COMPONENTE])) = ComponenteBuscado
+            )
         )
     )
-)
+    """
 
+    # -----------------------------------------
+    # POST A POWER BI API
+    # -----------------------------------------
+    url = f"https://api.powerbi.com/v1.0/myorg/groups/{GROUP_ID}/datasets/{DATASET_ID}/executeQueries"
 
-        """
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {TOKEN}"
+    }
 
-        url = f"https://api.powerbi.com/v1.0/myorg/groups/{GROUP_ID}/datasets/{DATASET_ID}/executeQueries"
+    body = {
+        "queries": [{"query": dax_query}],
+        "serializerSettings": {"includeNulls": True}
+    }
 
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}"
-        }
+    response = requests.post(url, headers=headers, data=json.dumps(body))
 
-        payload = {"queries": [{"query": dax}]}
+    # Verificar si Power BI responde con error
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
 
-        response = requests.post(url, headers=headers, data=json.dumps(payload))
-        response.raise_for_status()
+    pb_response = response.json()
 
-        data = response.json()
+    try:
+        total = pb_response["results"][0]["tables"][0]["rows"][0]["TotalRegistros"]
+    except:
+        raise HTTPException(status_code=500, detail="Error interpretando los datos devueltos por Power BI")
 
-        # Extraer resultado del JSON
-        filas = data["results"][0]["tables"][0]["rows"]
-
-        if not filas:
-            total = 0
-        else:
-            total = filas[0].get("TotalRegistros", 0)
-
-        return {
-            "componente": componente,
-            "total_registros": total
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
-
-
-
-
+    # -----------------------------------------
+    # RESPUESTA FINAL
+    # -----------------------------------------
+    return {
+        "componente": componente,
+        "total_registros": total
+    }
