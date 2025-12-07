@@ -6,19 +6,17 @@ import os
 app = FastAPI()
 
 # ---------- CONFIG -----------------
-TENANT_ID = "d954438c-7f11-4a1a-b7ee-f77d6c48ec0a"
-CLIENT_ID = "70348d88-7eff-4fd4-99ff-dec8cee6afec"
-CLIENT_SECRET = "i_a8Q~uePWggn1~~SMHvCUfEsfWDGlN~27Sxfb_i"
+TENANT_ID = os.getenv("TENANT_ID")
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 
 GROUP_ID = "bd2f044c-eb69-4ebc-b1ed-ebdf71c33b77"
 DATASET_ID = "1e30ac8a-b779-40ed-a18c-883383e44014"
 
-# Tabla y columna EXACTAS del modelo
 TABLE_NAME = "DATOS"
 COLUMN_NAME = "COMPONENTE"
 # -----------------------------------
 
-# 🔐 Obtener token de Azure AD
 def obtener_token():
     url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
 
@@ -35,16 +33,16 @@ def obtener_token():
 
 @app.get("/")
 def home():
-    return {"mensaje": "API conectada correctamente"}
+    return {"mensaje": "API funcionando correctamente"}
 
-@app.get("/contar_registros")
-def contar_registros(componente: str):
+@app.get("/contar")
+def contar(componente: str):
 
     try:
         token = obtener_token()
 
-        # DAX dinámico
-        dax_query = f"""
+        # Consulta DAX → Cuenta cuántas veces se repite el valor
+        dax = f"""
         EVALUATE
         ROW(
             "TotalRegistros",
@@ -64,18 +62,20 @@ def contar_registros(componente: str):
             "Authorization": f"Bearer {token}"
         }
 
-        payload = {
-            "queries": [{"query": dax_query}],
-            "serializerSettings": {"incudeNulls": True}
-        }
+        payload = {"queries": [{"query": dax}]}
 
         response = requests.post(url, headers=headers, data=json.dumps(payload))
         response.raise_for_status()
 
-        resultado = response.json()
+        data = response.json()
 
-        # Extraer valor devuelto por el DAX
-        total = resultado["results"][0]["tables"][0]["rows"][0]["TotalRegistros"]
+        # Extraer resultado del JSON
+        filas = data["results"][0]["tables"][0]["rows"]
+
+        if not filas:
+            total = 0
+        else:
+            total = filas[0].get("TotalRegistros", 0)
 
         return {
             "componente": componente,
@@ -84,5 +84,6 @@ def contar_registros(componente: str):
 
     except Exception as e:
         return {"error": str(e)}
+
 
 
