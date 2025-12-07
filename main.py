@@ -1,24 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import requests
 import os
+import requests
 
 app = FastAPI()
 
 # ---------------------------
-# 1. ENDPOINT DE PRUEBA /
-# ---------------------------
-@app.get("/")
-def home():
-    return {
-        "mensaje": "API lista",
-        "power_bi": "Conexión segura preparándose",
-        "endpoints": ["/contar_registros?componente=XXXX"]
-    }
-
-
-# ---------------------------
-# 2. MODELO DE RESPUESTA
+# MODELO DE RESPUESTA
 # ---------------------------
 class ConteoRespuesta(BaseModel):
     componente: str
@@ -26,12 +14,31 @@ class ConteoRespuesta(BaseModel):
 
 
 # ---------------------------
-# 3. OBTENER TOKEN DE POWER BI
+# ENDPOINT RAÍZ DE PRUEBA
+# ---------------------------
+@app.get("/")
+def home():
+    return {
+        "mensaje": "API lista y conectada a Power BI (executeQueries)",
+        "endpoints": [
+            "/contar_registros?componente=XXXX"
+        ]
+    }
+
+
+# ---------------------------
+# OBTENER TOKEN DE AZURE AD
 # ---------------------------
 def obtener_token():
     tenant = os.getenv("TENANT_ID")
     client_id = os.getenv("CLIENT_ID")
     client_secret = os.getenv("CLIENT_SECRET")
+
+    if not all([tenant, client_id, client_secret]):
+        raise HTTPException(
+            status_code=500,
+            detail="Faltan variables de entorno TENANT_ID, CLIENT_ID o CLIENT_SECRET"
+        )
 
     url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
 
@@ -44,70 +51,107 @@ def obtener_token():
 
     r = requests.post(url, data=body)
     if r.status_code != 200:
-        raise HTTPException(500, f"Error obteniendo token: {r.text}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error obteniendo token: {r.text}"
+        )
 
     return r.json()["access_token"]
 
 
 # ---------------------------
-# 4. CONSULTAR DATOS DE POWER BI
+# FUNCIÓN QUE EJECUTA DAX EN POWER BI
 # ---------------------------
-def obtener_datos_real():
-    token = obtener_token()
+def ejecutar_dax_conteo(componente: str) -> int:
+    """
+    Ejecuta una consulta DAX sobre la tabla DATOS para contar
+    cuántas filas tienen ese componente.
+    """
 
+    token = obtener_token()
     group_id = os.getenv("GROUP_ID")
     dataset_id = os.getenv("DATASET_ID")
 
-    url = f"https://api.powerbi.com/v1.0/myorg/groups/{group_id}/datasets/{dataset_id}/tables/DATOS/rows"
+    if not all([group_id, dataset_id]):
+        raise HTTPException(
+            status_code=500,
+            detail="Faltan variables de entorno GROUP_ID o DATASET_ID"
+        )
 
-    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://api.powerbi.com/v1.0/myorg/groups/{group_id}/datasets/{dataset_id}/executeQueries"
 
-    r = requests.get(url, headers=headers)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    # 👇 DAX: cuenta filas en la tabla DATOS filtrando por [Componente]
+    dax_query = {
+        "queries": [
+            {
+                "query": f"""
+                EVALUATE
+                ROW(
+                    "TotalRegistros",
+                    COUNTROWS(
+                        FILTER(
+                            DATOS,
+                            DATOS[Componente] = "{componente}"
+                        )
+                    )
+                )
+                """
+            }
+        ]
+    }
+
+    r = requests.post(url, headers=headers, json=dax_query)
 
     if r.status_code != 200:
-        raise HTTPException(500, f"Error consultando dataset: {r.text}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error ejecutando DAX: {r.text}"
+        )
 
-    return r.json()["value"]  # Lista de filas
+    data = r.json()
+
+    try:
+        rows = data["results"][0]["tables"][0]["rows"]
+        if not rows:
+            return 0
+        # La columna de la fila ROW se llama "TotalRegistros"
+        total = rows[0]["TotalRegistros"]
+        return int(total)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error interpretando respuesta DAX: {e} | {data}"
+        )
 
 
 # ---------------------------
-# 5. ENDPOINT PRINCIPAL
+# ENDPOINT /contar_registros
 # ---------------------------
 @app.get("/contar_registros", response_model=ConteoRespuesta)
 def contar_registros(componente: str):
     """
-    Busca cuántas filas tienen el componente especificado.
+    Devuelve cuántas filas tiene el componente en la tabla DATOS.
+    Usa executeQueries (DAX) sobre el dataset de Power BI.
     """
 
-    # Obtener filas REALES del dataset Power BI
-    filas = obtener_datos_real()
+    total = ejecutar_dax_conteo(componente)
 
-    coincidencias = [
-        f for f in filas
-        if str(f.get("Componente", "")).lower() == componente.lower()
-    ]
-
-    if not coincidencias:
-        raise HTTPException(404, f"El componente '{componente}' no existe.")
+    if total == 0:
+        # Si quieres que devuelva 0 en vez de 404, cambia esto
+        raise HTTPException(
+            status_code=404,
+            detail=f"No hay registros para el componente '{componente}'."
+        )
 
     return ConteoRespuesta(
         componente=componente,
-        total_registros=len(coincidencias)
+        total_registros=total
     )
-@app.get("/listar_tablas")
-def listar_tablas():
-    token = obtener_token()
-    group_id = os.getenv("GROUP_ID")
-    dataset_id = os.getenv("DATASET_ID")
-
-    url = f"https://api.powerbi.com/v1.0/myorg/groups/{group_id}/datasets/{dataset_id}/tables"
-
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
-
-    r = requests.get(url, headers=headers)
-    return r.json()
 
 
 
