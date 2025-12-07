@@ -1,86 +1,99 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import requests
-
-TENANT_ID = "d954438c-7f11-4a1a-b7ee-f77d6c48ec0a"
-CLIENT_ID = "70348d88-7eff-4fd4-99ff-dec8cee6afec"
-CLIENT_SECRET = "i_a8Q~uePWggn1~~SMHvCUfEsfWDGlN~27Sxfb_i"
-GROUP_ID = "bd2f044c-eb69-4ebc-b1ed-ebdf71c33b77"
-DATASET_ID = "1e30ac8a-b779-40ed-a18c-883383e44014"
+import os
 
 app = FastAPI()
 
-class ComponenteRequest(BaseModel):
-    componente: str
+# ---------------------------
+# 1. ENDPOINT DE PRUEBA /
+# ---------------------------
+@app.get("/")
+def home():
+    return {
+        "mensaje": "API lista",
+        "power_bi": "Conexión segura preparándose",
+        "endpoints": ["/contar_registros?componente=XXXX"]
+    }
 
+
+# ---------------------------
+# 2. MODELO DE RESPUESTA
+# ---------------------------
+class ConteoRespuesta(BaseModel):
+    componente: str
+    total_registros: int
+
+
+# ---------------------------
+# 3. OBTENER TOKEN DE POWER BI
+# ---------------------------
 def obtener_token():
-    url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-    data = {
+    tenant = os.getenv("TENANT_ID")
+    client_id = os.getenv("CLIENT_ID")
+    client_secret = os.getenv("CLIENT_SECRET")
+
+    url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+
+    body = {
         "grant_type": "client_credentials",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
+        "client_id": client_id,
+        "client_secret": client_secret,
         "scope": "https://analysis.windows.net/powerbi/api/.default"
     }
-    r = requests.post(url, data=data)
-    r.raise_for_status()
+
+    r = requests.post(url, data=body)
+    if r.status_code != 200:
+        raise HTTPException(500, f"Error obteniendo token: {r.text}")
+
     return r.json()["access_token"]
 
-@app.post("/verificar-componente")
-def verificar_componente(req: ComponenteRequest):
+
+# ---------------------------
+# 4. CONSULTAR DATOS DE POWER BI
+# ---------------------------
+def obtener_datos_real():
     token = obtener_token()
 
-    query = {
-        "queries": [
-            {
-                "query": f"""
-                EVALUATE
-                SUMMARIZE(
-                    FILTER(DATOS, DATOS[Componente] = "{req.componente}"),
-                    DATOS[Componente],
-                    "TotalRegistros", COUNTROWS(DATOS)
-                )
-                """
-            }
-        ]
-    }
+    group_id = os.getenv("GROUP_ID")
+    dataset_id = os.getenv("DATASET_ID")
 
-    url = f"https://api.powerbi.com/v1.0/myorg/groups/{GROUP_ID}/datasets/{DATASET_ID}/executeQueries"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    url = f"https://api.powerbi.com/v1.0/myorg/groups/{group_id}/datasets/{dataset_id}/tables/DATOS/rows"
 
-    r = requests.post(url, json=query, headers=headers)
-    r.raise_for_status()
-    rows = r.json()["results"][0]["tables"][0]["rows"]
+    headers = {"Authorization": f"Bearer {token}"}
 
-    if len(rows) == 0:
-        return {"existe": False, "componente": req.componente, "total_registros": 0}
-    else:
-        return {"existe": True, "componente": req.componente, "total_registros": rows[0]["TotalRegistros"]}
+    r = requests.get(url, headers=headers)
 
-@app.post("/obtener-datos")
-def obtener_datos(req: ComponenteRequest):
-    token = obtener_token()
+    if r.status_code != 200:
+        raise HTTPException(500, f"Error consultando dataset: {r.text}")
 
-    query = {
-        "queries": [
-            {
-                "query": f"""
-                EVALUATE
-                TOPN(
-                    20,
-                    FILTER(DATOS, DATOS[Componente] = "{req.componente}"),
-                    DATOS[Fecha], DESC
-                )
-                """
-            }
-        ]
-    }
+    return r.json()["value"]  # Lista de filas
 
-    url = f"https://api.powerbi.com/v1.0/myorg/groups/{GROUP_ID}/datasets/{DATASET_ID}/executeQueries"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    r = requests.post(url, json=query, headers=headers)
-    r.raise_for_status()
-    rows = r.json()["results"][0]["tables"][0]["rows"]
+# ---------------------------
+# 5. ENDPOINT PRINCIPAL
+# ---------------------------
+@app.get("/contar_registros", response_model=ConteoRespuesta)
+def contar_registros(componente: str):
+    """
+    Busca cuántas filas tienen el componente especificado.
+    """
 
-    return {"componente": req.componente, "filas": rows}
+    # Obtener filas REALES del dataset Power BI
+    filas = obtener_datos_real()
+
+    coincidencias = [
+        f for f in filas
+        if str(f.get("Componente", "")).lower() == componente.lower()
+    ]
+
+    if not coincidencias:
+        raise HTTPException(404, f"El componente '{componente}' no existe.")
+
+    return ConteoRespuesta(
+        componente=componente,
+        total_registros=len(coincidencias)
+    )
+
+
 
