@@ -1,43 +1,46 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 import requests
 import json
 import os
 
-# ----------------------------------------
-# CONFIGURACIÓN POWER BI
-# ----------------------------------------
-TENANT_ID     = "d954438c-7f11-4a1a-b7ee-f77d6c48ec0a"
-CLIENT_ID     = "70348d88-7eff-4fd4-99ff-dec8cee6afec"
-CLIENT_SECRET = "i_a8Q~uePWggn1~~SMHvCUfEsfWDGlN~27Sxfb_i" 
+app = FastAPI()
 
-WORKSPACE_ID  = "bd2f044c-eb69-4ebc-b1ed-ebdf71c33b77"
-DATASET_ID    = "1e30ac8a-b779-40ed-a18c-883383e44014"
+# -----------------------------
+# 🔐 CONFIGURACIÓN POWER BI
+# -----------------------------
+TENANT_ID    = "d954438c-7f11-4a1a-b7ee-f77d6c48ec0a"
+CLIENT_ID    = "70348d88-7eff-4fd4-99ff-dec8cee6afec"
+CLIENT_SECRET = "i_a8Q~uePWggn1~~SMHvCUfEsfWDGlN~27Sxfb_i"
+
+GROUP_ID     = "bd2f044c-eb69-4ebc-b1ed-ebdf71c33b77"
+DATASET_ID   = "1e30ac8a-b779-40ed-a18c-883383e44014"
 
 TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-EXECUTE_URL = f"https://api.powerbi.com/v1.0/myorg/groups/{WORKSPACE_ID}/datasets/{DATASET_ID}/executeQueries"
+EXECUTE_URL = f"https://api.powerbi.com/v1.0/myorg/groups/{GROUP_ID}/datasets/{DATASET_ID}/executeQueries"
 
-# ----------------------------------------
-# FUNCIÓN PARA OBTENER TOKEN
-# ----------------------------------------
+
+# -----------------------------
+# 🔐 OBTENER TOKEN
+# -----------------------------
 def obtener_token():
-    data = {
+    datos = {
         "grant_type": "client_credentials",
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
         "scope": "https://analysis.windows.net/powerbi/api/.default"
     }
 
-    r = requests.post(TOKEN_URL, data=data)
+    respuesta = requests.post(TOKEN_URL, data=datos)
 
-    if r.status_code != 200:
-        raise HTTPException(500, f"Error obteniendo token: {r.text}")
+    if respuesta.status_code != 200:
+        raise HTTPException(500, f"Error obteniendo token: {respuesta.text}")
 
-    return r.json()["access_token"]
+    return respuesta.json()["access_token"]
 
-# ----------------------------------------
-# CONSULTA DAX FILTRANDO COMPONENTE
-# ----------------------------------------
+
+# -----------------------------
+# 🔍 CONSULTAR CANTIDAD DE REGISTROS
+# -----------------------------
 def contar_componente(valor_componente: str):
     token = obtener_token()
 
@@ -72,25 +75,34 @@ def contar_componente(valor_componente: str):
 
     data = r.json()
 
+    # -----------------------------
+    # 📌 FIX IMPORTANTE
+    # Power BI devuelve rows = [[{ "TotalRegistros": X }]]
+    # -----------------------------
     try:
-        total = data["results"][0]["tables"][0]["rows"][0]["TotalRegistros"]
-    except:
+        rows = data["results"][0]["tables"][0]["rows"]
+
+        if not rows or not rows[0] or not isinstance(rows[0][0], dict):
+            raise Exception("Formato desconocido")
+
+        total = rows[0][0].get("TotalRegistros", 0)
+
+    except Exception as e:
         raise HTTPException(500, f"Error interpretando respuesta DAX: {data}")
 
     return total
 
-# ----------------------------------------
-# FASTAPI
-# ----------------------------------------
-app = FastAPI()
 
+# -----------------------------
+# 🌐 ENDPOINTS
+# -----------------------------
 @app.get("/")
 def home():
     return {
-        "mensaje": "API conectada a Power BI",
-        "estado": "OK",
-        "endpoint": "/contar?componente=XXXX"
+        "mensaje": "API funcionando correctamente en Render",
+        "endpoint_ejemplo": "/contar?componente=EC123-M"
     }
+
 
 @app.get("/contar")
 def contar_endpoint(componente: str):
