@@ -8,7 +8,7 @@ import requests
 
 TENANT_ID   = "d954438c-7f11-4a1a-b7ee-f77d6c48ec0a"
 CLIENT_ID   = "70348d88-7eff-4fd4-99ff-dec8cee6afec"
-CLIENT_SECRET = "AQUI_TU_CLIENT_SECRET_REAL"  
+CLIENT_SECRET = "i_a8Q~uePWggn1~~SMHvCUfEsfWDGlN~27Sxfb_i" 
 
 GROUP_ID    = "bd2f044c-eb69-4ebc-b1ed-ebdf71c33b77"
 DATASET_ID  = "1e30ac8a-b779-40ed-a18c-883383e44014"
@@ -116,6 +116,7 @@ def contar_registros(componente: str):
         "componente": componente,
         "total_registros": total
     }
+
 
 
 
