@@ -116,6 +116,49 @@ def contar_registros(componente: str):
         "componente": componente,
         "total_registros": total
     }
+@app.get("/filas")
+def obtener_filas(componente: str):
+
+    token = obtener_token()
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    dax_query = {
+        "queries": [
+            {
+                "query": f"""
+                    EVALUATE
+                    FILTER(
+                        {TABLE_NAME},
+                        {TABLE_NAME}[{COLUMN_NAME}] = "{componente}"
+                    )
+                """
+            }
+        ]
+    }
+
+    r = requests.post(EXECUTE_URL, headers=headers, json=dax_query)
+
+    if r.status_code != 200:
+        raise HTTPException(500, f"Error desde Power BI: {r.text}")
+
+    data = r.json()
+
+    try:
+        rows = data["results"][0]["tables"][0]["rows"]
+    except:
+        raise HTTPException(500, f"Error interpretando respuesta: {data}")
+
+    # Devolver todas las filas completas
+    return {
+        "componente": componente,
+        "total_filas": len(rows),
+        "filas": rows
+    }
+
 
 
 
