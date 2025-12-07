@@ -43,16 +43,20 @@ def contar(componente: str):
 
         # Consulta DAX → Cuenta cuántas veces se repite el valor
         dax = f"""
-        EVALUATE
-        ROW(
-            "TotalRegistros",
-            COUNTROWS(
-                FILTER(
-                    '{TABLE_NAME}',
-                    '{TABLE_NAME}'[{COLUMN_NAME}] = "{componente}"
-                )
-            )
+EVALUATE
+VAR ComponenteBuscado = TRIM(UPPER("@COMPONENTE"))
+RETURN
+ROW(
+    "TotalRegistros",
+    COUNTROWS(
+        FILTER(
+            DATOS,
+            TRIM(UPPER(DATOS[COMPONENTE])) = ComponenteBuscado
         )
+    )
+)
+
+
         """
 
         url = f"https://api.powerbi.com/v1.0/myorg/groups/{GROUP_ID}/datasets/{DATASET_ID}/executeQueries"
@@ -84,6 +88,7 @@ def contar(componente: str):
 
     except Exception as e:
         return {"error": str(e)}
+
 
 
 
