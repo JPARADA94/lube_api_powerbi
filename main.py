@@ -1,115 +1,122 @@
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import requests
-import json
-import os
 
-app = FastAPI()
+# =========================================================
+# CONFIGURACIONES - RELLENA CON TUS DATOS CORRECTOS
+# =========================================================
 
-# -----------------------------
-# 🔐 CONFIGURACIÓN POWER BI
-# -----------------------------
-TENANT_ID    = "d954438c-7f11-4a1a-b7ee-f77d6c48ec0a"
-CLIENT_ID    = "70348d88-7eff-4fd4-99ff-dec8cee6afec"
-CLIENT_SECRET = "i_a8Q~uePWggn1~~SMHvCUfEsfWDGlN~27Sxfb_i"
+TENANT_ID   = "d954438c-7f11-4a1a-b7ee-f77d6c48ec0a"
+CLIENT_ID   = "70348d88-7eff-4fd4-99ff-dec8cee6afec"
+CLIENT_SECRET = "AQUI_TU_CLIENT_SECRET_REAL"  
 
-GROUP_ID     = "bd2f044c-eb69-4ebc-b1ed-ebdf71c33b77"
-DATASET_ID   = "1e30ac8a-b779-40ed-a18c-883383e44014"
+GROUP_ID    = "bd2f044c-eb69-4ebc-b1ed-ebdf71c33b77"
+DATASET_ID  = "1e30ac8a-b779-40ed-a18c-883383e44014"
 
-TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-EXECUTE_URL = f"https://api.powerbi.com/v1.0/myorg/groups/{GROUP_ID}/datasets/{DATASET_ID}/executeQueries"
+TABLE_NAME  = "DATOS"          # Nombre EXACTO de la tabla
+COLUMN_NAME = "COMPONENTE"     # Nombre EXACTO de la columna
+
+# =========================================================
+# INICIALIZAR API
+# =========================================================
+
+app = FastAPI(title="API Conteo Power BI", version="1.0")
 
 
-# -----------------------------
-# 🔐 OBTENER TOKEN
-# -----------------------------
+# =========================================================
+# FUNCIONES DE AUTENTICACIÓN
+# =========================================================
+
 def obtener_token():
-    datos = {
-        "grant_type": "client_credentials",
+    url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+
+    data = {
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
+        "grant_type": "client_credentials",
         "scope": "https://analysis.windows.net/powerbi/api/.default"
     }
 
-    respuesta = requests.post(TOKEN_URL, data=datos)
+    resp = requests.post(url, data=data)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Error obteniendo token: {resp.text}")
 
-    if respuesta.status_code != 200:
-        raise HTTPException(500, f"Error obteniendo token: {respuesta.text}")
-
-    return respuesta.json()["access_token"]
+    return resp.json()["access_token"]
 
 
-# -----------------------------
-# 🔍 CONSULTAR CANTIDAD DE REGISTROS
-# -----------------------------
-def contar_componente(valor_componente: str):
+# =========================================================
+# ENDPOINT DE PRUEBA
+# =========================================================
+
+@app.get("/")
+def root():
+    return {
+        "mensaje": "API funcionando correctamente en Render",
+        "endpoints": [
+            "/contar?componente=XXXX"
+        ]
+    }
+
+
+# =========================================================
+# ENDPOINT PRINCIPAL: CONTAR REGISTROS
+# =========================================================
+
+@app.get("/contar")
+def contar_registros(componente: str):
+
     token = obtener_token()
+
+    # Construcción del DAX
+    dax_query = f"""
+    EVALUATE
+    ROW(
+        "TotalRegistros",
+        CALCULATE(
+            COUNTROWS('{TABLE_NAME}'),
+            '{TABLE_NAME}'[{COLUMN_NAME}] = "{componente}"
+        )
+    )
+    """
+
+    url = f"https://api.powerbi.com/v1.0/myorg/groups/{GROUP_ID}/datasets/{DATASET_ID}/executeQueries"
 
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
 
-    dax_query = {
-        "queries": [
-            {
-                "query": f"""
-                    EVALUATE
-                    ROW(
-                        "TotalRegistros",
-                        COUNTROWS(
-                            FILTER(
-                                DATOS,
-                                DATOS[COMPONENTE] = "{valor_componente}"
-                            )
-                        )
-                    )
-                """
-            }
-        ]
-    }
+    payload = {"queries": [{"query": dax_query}]}
 
-    r = requests.post(EXECUTE_URL, headers=headers, data=json.dumps(dax_query))
+    response = requests.post(url, headers=headers, json=payload)
 
-    if r.status_code != 200:
-        raise HTTPException(500, f"Power BI error: {r.text}")
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Error desde Power BI: {response.text}")
 
-    data = r.json()
+    data = response.json()
 
-    # -----------------------------
-    # 📌 FIX IMPORTANTE
-    # Power BI devuelve rows = [[{ "TotalRegistros": X }]]
-    # -----------------------------
     try:
         rows = data["results"][0]["tables"][0]["rows"]
+        fila = rows[0]  # El resultado está dentro de una fila dentro de una lista
 
-        if not rows or not rows[0] or not isinstance(rows[0][0], dict):
-            raise Exception("Formato desconocido")
-
-        total = rows[0][0].get("TotalRegistros", 0)
+        # Power BI puede devolver:
+        #   "TotalRegistros"
+        #   "[TotalRegistros]"
+        if "TotalRegistros" in fila:
+            total = fila["TotalRegistros"]
+        elif "[TotalRegistros]" in fila:
+            total = fila["[TotalRegistros]"]
+        else:
+            raise Exception(f"Formato inesperado en respuesta: {fila}")
 
     except Exception as e:
-        raise HTTPException(500, f"Error interpretando respuesta DAX: {data}")
+        raise HTTPException(status_code=500, detail=f"Error interpretando respuesta DAX: {str(e)}")
 
-    return total
-
-
-# -----------------------------
-# 🌐 ENDPOINTS
-# -----------------------------
-@app.get("/")
-def home():
-    return {
-        "mensaje": "API funcionando correctamente en Render",
-        "endpoint_ejemplo": "/contar?componente=EC123-M"
-    }
-
-
-@app.get("/contar")
-def contar_endpoint(componente: str):
-    total = contar_componente(componente)
     return {
         "componente": componente,
         "total_registros": total
     }
+
+
 
 
