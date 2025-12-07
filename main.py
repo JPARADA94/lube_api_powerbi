@@ -94,6 +94,21 @@ def contar_registros(componente: str):
         componente=componente,
         total_registros=len(coincidencias)
     )
+@app.get("/listar_tablas")
+def listar_tablas():
+    token = obtener_token()
+    group_id = os.getenv("GROUP_ID")
+    dataset_id = os.getenv("DATASET_ID")
+
+    url = f"https://api.powerbi.com/v1.0/myorg/groups/{group_id}/datasets/{dataset_id}/tables"
+
+    headers = {
+        "Authorization": f"Bearer {token}"
+    }
+
+    r = requests.get(url, headers=headers)
+    return r.json()
+
 
 
 
