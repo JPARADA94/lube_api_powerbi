@@ -1,140 +1,82 @@
-import os
+from fastapi import FastAPI, Query
 import requests
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-
-load_dotenv()
+import os
 
 app = FastAPI()
 
-# ---------------------------------------------
-# CONFIGURACIÓN
-# ---------------------------------------------
-TENANT_ID = os.getenv("TENANT_ID")
-CLIENT_ID = os.getenv("CLIENT_ID")
-CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-GROUP_ID = os.getenv("GROUP_ID")
-DATASET_ID = os.getenv("DATASET_ID")
+# ====== CONFIGURACIÓN =======
+POWER_BI_TENANT_ID = os.getenv("TENANT_ID")
+POWER_BI_CLIENT_ID = os.getenv("CLIENT_ID")
+POWER_BI_SECRET = os.getenv("CLIENT_SECRET")
+POWER_BI_GROUP_ID = os.getenv("GROUP_ID")
+POWER_BI_DATASET_ID = os.getenv("DATASET_ID")
+POWER_BI_TABLE_NAME = "DATOS"
 
-PBI_TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+TOKEN_URL = f"https://login.microsoftonline.com/{POWER_BI_TENANT_ID}/oauth2/v2.0/token"
 
-# ---------------------------------------------
-# CORS (para que Power BI pueda consumir API)
-# ---------------------------------------------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ---------------------------------------------
-# FUNCIONES AUXILIARES
-# ---------------------------------------------
+# =========================================
+# Obtener token OAuth2
+# =========================================
 def obtener_token():
-    """Autenticación con Azure AD para Power BI."""
     data = {
-        "client_id": CLIENT_ID,
-        "scope": "https://analysis.windows.net/powerbi/api/.default",
-        "client_secret": CLIENT_SECRET,
         "grant_type": "client_credentials",
+        "client_id": POWER_BI_CLIENT_ID,
+        "client_secret": POWER_BI_SECRET,
+        "scope": "https://analysis.windows.net/powerbi/api/.default",
     }
 
-    r = requests.post(PBI_TOKEN_URL, data=data)
-
-    if r.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Error al obtener token: {r.text}")
-
-    return r.json()["access_token"]
+    response = requests.post(TOKEN_URL, data=data)
+    response.raise_for_status()
+    return response.json()["access_token"]
 
 
-def ejecutar_dax_conteo(componente: str) -> int:
-    """Ejecuta un DAX para contar registros filtrados por Componente."""
-
-    token = obtener_token()
-
-    url = (
-        f"https://api.powerbi.com/v1.0/myorg/groups/"
-        f"{GROUP_ID}/datasets/{DATASET_ID}/executeQueries"
-    )
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-
-    dax_query = {
-        "queries": [
-            {
-                "query": f"""
-                EVALUATE
-                ROW(
-                    "TotalRegistros",
-                    COUNTROWS(
-                        FILTER(
-                            DATOS,
-                            DATOS[Componente] = "{componente}"
-                        )
-                    )
-                )
-                """
-            }
-        ]
-    }
-
-    r = requests.post(url, headers=headers, json=dax_query)
-
-    if r.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Error ejecutando DAX: {r.text}")
-
-    data = r.json()
-
-    # Extraer correctamente el conteo desde la estructura JSON de Power BI
-    try:
-        total = data["results"][0]["tables"][0]["rows"][0]["TotalRegistros"]
-        return int(total)
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error interpretando respuesta DAX: {e} | {data}"
-        )
-
-
-# ---------------------------------------------
-# ENDPOINTS
-# ---------------------------------------------
+# =========================================
+# Inicio de la API
+# =========================================
 @app.get("/")
-def root():
+def home():
     return {
         "mensaje": "API lista",
         "estado": "OK",
-        "endpoints": [
-            "/contar_registros?componente=XXXX"
-        ]
+        "endpoints": ["/contar_registros?componente=XXXX"]
     }
 
 
+# =========================================
+# Endpoint principal: contar registros por componente
+# =========================================
 @app.get("/contar_registros")
-def contar_registros(componente: str):
-    """Devuelve la cantidad de registros encontrados en el dataset filtrados por 'Componente'."""
+def contar_registros(componente: str = Query(...)):
     try:
-        total = ejecutar_dax_conteo(componente)
+        token = obtener_token()
+
+        url_dax = f"https://api.powerbi.com/v1.0/myorg/groups/{POWER_BI_GROUP_ID}/datasets/{POWER_BI_DATASET_ID}/executeQueries"
+
+        dax = {
+            "queries": [{
+                "query": f"EVALUATE ROW(\"TotalRegistros\", CALCULATE(COUNTROWS('{POWER_BI_TABLE_NAME}'), '{POWER_BI_TABLE_NAME}'[Componente] = \"{componente}\"))"
+            }]
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}"
+        }
+
+        response = requests.post(url_dax, json=dax, headers=headers)
+        response.raise_for_status()
+
+        data = response.json()
+
+        # Extraer el valor de la respuesta de Power BI
+        resultado = data["results"][0]["tables"][0]["rows"][0]["TotalRegistros"]
+
         return {
             "componente": componente,
-            "total_registros": total
+            "TotalRegistros": resultado
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"detail": str(e)}
 
 
-# ---------------------------------------------
-# MAIN LOCAL (Render NO usa esto)
-# ---------------------------------------------
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
